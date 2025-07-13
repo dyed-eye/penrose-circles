@@ -562,8 +562,8 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 
 func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
 	me.mark1.Draw(s, MARK1_STYLE)
-	me.mark2.Draw(s, MARK2_STYLE)
-	me.cuts.Draw(s, CUT_STYLE)
+	//me.mark2.Draw(s, MARK2_STYLE)
+	//me.cuts.Draw(s, CUT_STYLE)
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -720,7 +720,21 @@ func main() {
 	ro.RemoveDuplicates()
 	oro := ro.Optimize()
 
-	s := NewSVG(os.Stdout)
+	// Create the output directory if it doesn't exist
+	if err := os.MkdirAll("output", 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
+		return
+	}
+
+	// Open a file for writing
+	file, err := os.Create("output/penrose.svg")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating file: %v\n", err)
+		return
+	}
+	defer file.Close()  // Ensure the file is closed when done
+
+	s := NewSVG(file)
 	s.Start(bounds, DEFAULT_STYLE)
 	oro.MakeSVG(s)
 	s.End()
