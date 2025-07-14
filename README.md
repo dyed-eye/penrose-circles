@@ -1,18 +1,6 @@
-penrose-svg
+penrose-circles
 ===========
 
-Penrose Tiling SVG generation.
+Penrose Tiling Circles SVG generation.
 
-This is some golang code to generate Penrose P2 tilings in SVG.  I wrote this so that I could send the output to a laser cutter and make real life tiles to play with.
-
-To install run:
-
-* Have golang installed with a GOPATH set
-* Run `go get github.com/jbeda/penrose-svg`
-* Run `$GOPATH/bin/penrose-svg`
-
-Or you can clone this repo and start hacking directly.
-
-## Example (Requires an SVG capable browser)
-
-![Penrose Example](https://raw.githubusercontent.com/dyed-eye/penrose-circles/refs/heads/master/output/penrose.svg)
+This is some golang code to generate Penrose P2 tilings in SVG. Forked from jbeda/penrose-svg and keeps only certaing figures -- circles among the variety of different pathes from by the Penrose tiling
