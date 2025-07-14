@@ -15,4 +15,4 @@ Or you can clone this repo and start hacking directly.
 
 ## Example (Requires an SVG capable browser)
 
-![Penrose Example](https://rawgit.com/jbeda/penrose-svg/master/output/penrose.svg)
+![Penrose Example](https://raw.githubusercontent.com/dyed-eye/penrose-circles/refs/heads/master/output/penrose.svg)
