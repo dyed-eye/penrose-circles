@@ -160,6 +160,7 @@ type PathSegment interface {
 	P2() *geom.Coord
 	Reverse()
 	PathDraw(svg *SVG)
+	Length() float64
 }
 
 type Path struct {
@@ -242,6 +243,17 @@ func (me *Path) Draw(svg *SVG, s ...string) {
 	svg.EndPath()
 }
 
+func (me *Path) TotalLength() float64 {
+	total := 0.0
+	if me.segs == nil {
+		return total
+	}
+	for e := me.segs.Front(); e != nil; e = e.Next() {
+		total += e.Value.(PathSegment).Length()
+	}
+	return total
+}
+
 // +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
@@ -270,6 +282,9 @@ func (cl *CutLine) PathDraw(svg *SVG) {
 }
 func (cl *CutLine) Reverse() {
 	cl.A, cl.B = cl.B, cl.A
+}
+func (cl *CutLine) Length() float64 {
+	return cl.A.DistanceFrom(cl.B)
 }
 
 // +++ MarkArc
@@ -359,6 +374,11 @@ func (ma *MarkArc) PathSquishedArcBezierTo(svg *SVG, s ...string) {
 	// svg.Circle(p1, 0.002, s...)
 	// svg.Circle(ctrl1, 0.001, s...)
 	svg.PathCubicBezierTo(p2, ctrl1, ctrl2)
+}
+
+func (ma *MarkArc) Length() float64 {
+	angle := math.Abs(geom.VertexAngle(ma.A, ma.C, ma.B))
+	return angle * ma.R
 }
 
 // +++ RenderOutput
@@ -531,6 +551,26 @@ func (opc *OptimizedPathCollection) Optimize() {
 	fmt.Fprintf(os.Stderr, "  Non-cutting travel distance after optimization: %f\n", travelDistance)
 }
 
+func (opc *OptimizedPathCollection) PrintPathLengths() {
+	total := 0.0
+	for i, path := range opc.paths {
+		length := path.TotalLength()
+		total += length
+		fmt.Printf("Path %d length: %.4f\n", i+1, length)
+	}
+	fmt.Printf("Total length of all paths: %.4f\n", total)
+}
+
+func (opc *OptimizedPathCollection) Filtered(maxLength float64) *OptimizedPathCollection {
+	filtered := &OptimizedPathCollection{}
+	for _, path := range opc.paths {
+		if path.TotalLength() <= maxLength {
+			filtered.paths = append(filtered.paths, path)
+		}
+	}
+	return filtered
+}
+
 type OptimizedRenderOutput struct {
 	cuts  OptimizedPathCollection
 	mark1 OptimizedPathCollection
@@ -561,7 +601,10 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 }
 
 func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
-	me.mark1.Draw(s, MARK1_STYLE)
+	fmt.Println("\nMark1 paths:")
+	me.mark1.PrintPathLengths()
+	filteredMark1 := me.mark1.Filtered(0.55)
+	filteredMark1.Draw(s, MARK1_STYLE)
 	//me.mark2.Draw(s, MARK2_STYLE)
 	//me.cuts.Draw(s, CUT_STYLE)
 }
@@ -704,7 +747,7 @@ func main() {
 	shapes := Sun()
 	// The laser cutter can cut 400x600.  Make our dimensions match that.
 	bounds := geom.Rect{geom.Coord{-300, -200}, geom.Coord{300, 200}}
-	bounds.Scale(1.0/350.0, 1.0/350.0)
+	bounds.Scale(1.0/150.0, 1.0/150.0)
 
 	// Deflate the shapes
 	shapes = DeflatePenrosePrimitives(shapes, DEFLATE_LEVEL)
