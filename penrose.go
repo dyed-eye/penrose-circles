@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 )
 
 // Arc drawing functions/strategies
@@ -25,7 +26,7 @@ const (
 	CUT_STYLE                    = "stroke: black"
 	MARK1_STYLE                  = "stroke: green"
 	MARK2_STYLE                  = "stroke: red"
-	DEFLATE_LEVEL                = 5
+	DEFLATE_LEVEL                = 8
 	SQUISH_ARC_FUNC              = ARC_FUNC_CIRCULAR
 	SQUISH_ARC_FACTOR            = 0.9
 	SQUISH_ARC_BEZIER_ROUNDESS_A = 0.15
@@ -160,6 +161,7 @@ type PathSegment interface {
 	P2() *geom.Coord
 	Reverse()
 	PathDraw(svg *SVG)
+	Length() float64
 }
 
 type Path struct {
@@ -242,6 +244,17 @@ func (me *Path) Draw(svg *SVG, s ...string) {
 	svg.EndPath()
 }
 
+func (me *Path) TotalLength() float64 {
+	total := 0.0
+	if me.segs == nil {
+		return total
+	}
+	for e := me.segs.Front(); e != nil; e = e.Next() {
+		total += e.Value.(PathSegment).Length()
+	}
+	return total
+}
+
 // +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
@@ -270,6 +283,9 @@ func (cl *CutLine) PathDraw(svg *SVG) {
 }
 func (cl *CutLine) Reverse() {
 	cl.A, cl.B = cl.B, cl.A
+}
+func (cl *CutLine) Length() float64 {
+	return cl.A.DistanceFrom(cl.B)
 }
 
 // +++ MarkArc
@@ -359,6 +375,11 @@ func (ma *MarkArc) PathSquishedArcBezierTo(svg *SVG, s ...string) {
 	// svg.Circle(p1, 0.002, s...)
 	// svg.Circle(ctrl1, 0.001, s...)
 	svg.PathCubicBezierTo(p2, ctrl1, ctrl2)
+}
+
+func (ma *MarkArc) Length() float64 {
+	angle := math.Abs(geom.VertexAngle(ma.A, ma.C, ma.B))
+	return angle * ma.R
 }
 
 // +++ RenderOutput
@@ -531,6 +552,26 @@ func (opc *OptimizedPathCollection) Optimize() {
 	fmt.Fprintf(os.Stderr, "  Non-cutting travel distance after optimization: %f\n", travelDistance)
 }
 
+func (opc *OptimizedPathCollection) PrintPathLengths() {
+	total := 0.0
+	for i, path := range opc.paths {
+		length := path.TotalLength()
+		total += length
+		fmt.Printf("Path %d length: %.4f\n", i+1, length)
+	}
+	fmt.Printf("Total length of all paths: %.4f\n", total)
+}
+
+func (opc *OptimizedPathCollection) Filtered(maxLength float64) *OptimizedPathCollection {
+	filtered := &OptimizedPathCollection{}
+	for _, path := range opc.paths {
+		if path.TotalLength() <= maxLength {
+			filtered.paths = append(filtered.paths, path)
+		}
+	}
+	return filtered
+}
+
 type OptimizedRenderOutput struct {
 	cuts  OptimizedPathCollection
 	mark1 OptimizedPathCollection
@@ -561,7 +602,10 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 }
 
 func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
-	me.mark1.Draw(s, MARK1_STYLE)
+	fmt.Println("\nMark1 paths:")
+	me.mark1.PrintPathLengths()
+	filteredMark1 := me.mark1.Filtered(0.09)
+	filteredMark1.Draw(s, MARK1_STYLE)
 	//me.mark2.Draw(s, MARK2_STYLE)
 	//me.cuts.Draw(s, CUT_STYLE)
 }
@@ -646,7 +690,7 @@ var HalfDart = halfDart{
 }
 
 func Sun() []PenrosePrimitive {
-	r := make([]PenrosePrimitive, 0, 10)
+	r := make([]PenrosePrimitive, 0, 50) // was 10
 	for i := 0; i < 5; i++ {
 		r = append(r, halfKite{
 			&geom.Triangle{
@@ -668,14 +712,26 @@ func Sun() []PenrosePrimitive {
 
 func DeflatePenrosePrimitives(ps []PenrosePrimitive, levels int) []PenrosePrimitive {
 	r := ps
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+
 	fmt.Fprintf(os.Stderr, "Starting primitive count: %d\n", len(r))
 	for i := 0; i < levels; i++ {
 		rNext := make([]PenrosePrimitive, 0, 3*len(r))
 		for _, shape := range r {
-			rNext = append(rNext, shape.Deflate()...)
+			// rNext = append(rNext, shape.Deflate()...)
+			wg.Add(1)
+			go func(s PenrosePrimitive) {
+				defer wg.Done()
+				newShapes := s.Deflate()
+				mutex.Lock()
+				rNext = append(rNext, newShapes...)
+				mutex.Unlock()
+			}(shape)
 		}
+		wg.Wait()
 		r = rNext
-		fmt.Fprintf(os.Stderr, "Primitive count after deflation %d: %d\n", i+1, len(r))
+		// fmt.Fprintf(os.Stderr, "Primitive count after deflation %d: %d\n", i+1, len(r))
 	}
 	return r
 }
@@ -704,7 +760,7 @@ func main() {
 	shapes := Sun()
 	// The laser cutter can cut 400x600.  Make our dimensions match that.
 	bounds := geom.Rect{geom.Coord{-300, -200}, geom.Coord{300, 200}}
-	bounds.Scale(1.0/350.0, 1.0/350.0)
+	bounds.Scale(1.0/150.0, 1.0/150.0)
 
 	// Deflate the shapes
 	shapes = DeflatePenrosePrimitives(shapes, DEFLATE_LEVEL)
