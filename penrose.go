@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"strings"
+	"sync"
 )
 
 // Arc drawing functions/strategies
@@ -25,7 +26,7 @@ const (
 	CUT_STYLE                    = "stroke: black"
 	MARK1_STYLE                  = "stroke: green"
 	MARK2_STYLE                  = "stroke: red"
-	DEFLATE_LEVEL                = 5
+	DEFLATE_LEVEL                = 8
 	SQUISH_ARC_FUNC              = ARC_FUNC_CIRCULAR
 	SQUISH_ARC_FACTOR            = 0.9
 	SQUISH_ARC_BEZIER_ROUNDESS_A = 0.15
@@ -603,7 +604,7 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
 	fmt.Println("\nMark1 paths:")
 	me.mark1.PrintPathLengths()
-	filteredMark1 := me.mark1.Filtered(0.55)
+	filteredMark1 := me.mark1.Filtered(0.09)
 	filteredMark1.Draw(s, MARK1_STYLE)
 	//me.mark2.Draw(s, MARK2_STYLE)
 	//me.cuts.Draw(s, CUT_STYLE)
@@ -689,7 +690,7 @@ var HalfDart = halfDart{
 }
 
 func Sun() []PenrosePrimitive {
-	r := make([]PenrosePrimitive, 0, 10)
+	r := make([]PenrosePrimitive, 0, 50) // was 10
 	for i := 0; i < 5; i++ {
 		r = append(r, halfKite{
 			&geom.Triangle{
@@ -711,14 +712,26 @@ func Sun() []PenrosePrimitive {
 
 func DeflatePenrosePrimitives(ps []PenrosePrimitive, levels int) []PenrosePrimitive {
 	r := ps
+	var wg sync.WaitGroup
+	var mutex sync.Mutex
+
 	fmt.Fprintf(os.Stderr, "Starting primitive count: %d\n", len(r))
 	for i := 0; i < levels; i++ {
 		rNext := make([]PenrosePrimitive, 0, 3*len(r))
 		for _, shape := range r {
-			rNext = append(rNext, shape.Deflate()...)
+			// rNext = append(rNext, shape.Deflate()...)
+			wg.Add(1)
+			go func(s PenrosePrimitive) {
+				defer wg.Done()
+				newShapes := s.Deflate()
+				mutex.Lock()
+				rNext = append(rNext, newShapes...)
+				mutex.Unlock()
+			}(shape)
 		}
+		wg.Wait()
 		r = rNext
-		fmt.Fprintf(os.Stderr, "Primitive count after deflation %d: %d\n", i+1, len(r))
+		// fmt.Fprintf(os.Stderr, "Primitive count after deflation %d: %d\n", i+1, len(r))
 	}
 	return r
 }
