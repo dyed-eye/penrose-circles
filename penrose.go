@@ -286,6 +286,14 @@ func (me *Path) Area() float64 {
 	return math.Abs(area) / 2
 }
 
+func getSegments(path *Path) []PathSegment {
+	var segments []PathSegment
+	for e := path.segs.Front(); e != nil; e = e.Next() {
+		segments = append(segments, e.Value.(PathSegment))
+	}
+	return segments
+}
+
 // +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
@@ -490,6 +498,40 @@ func (opc *OptimizedPathCollection) AddSegment(p PathSegment) {
 	opc.AddPath(path)
 }
 
+func doSegmentsCross(seg1, seg2 PathSegment) bool {
+	p1 := seg1.P1()
+	p2 := seg1.P2()
+	p3 := seg2.P1()
+	p4 := seg2.P2()
+
+	// Calculate the orientation of the points
+	o1 := orientation(*p1, *p2, *p3)
+	o2 := orientation(*p1, *p2, *p4)
+	o3 := orientation(*p3, *p4, *p1)
+	o4 := orientation(*p3, *p4, *p2)
+
+	// General case
+	if o1 != o2 && o3 != o4 {
+		return true
+	}
+
+	// Special cases
+	if o1 == 0 && onSegment(*p1, *p3, *p2) {
+		return true
+	}
+	if o2 == 0 && onSegment(*p1, *p4, *p2) {
+		return true
+	}
+	if o3 == 0 && onSegment(*p3, *p1, *p4) {
+		return true
+	}
+	if o4 == 0 && onSegment(*p3, *p2, *p4) {
+		return true
+	}
+
+	return false
+}
+
 func (opc *OptimizedPathCollection) AddPath(np *Path) {
 	npP1 := np.Front().P1()
 	npP2 := np.Back().P2()
@@ -613,6 +655,25 @@ func (opc *OptimizedPathCollection) RemoveUnclosedPaths() {
 	opc.paths = validPaths
 }
 
+func (opc *OptimizedPathCollection) CheckCrossings() {
+	for i, path1 := range opc.paths {
+		for j, path2 := range opc.paths {
+			if i == j {
+				continue
+			}
+			for _, seg1 := range getSegments(path1) {
+				for _, seg2 := range getSegments(path2) {
+					if doSegmentsCross(seg1, seg2) {
+						fmt.Printf("Crossing detected between path %d and path %d\n", i+1, j+1)
+						return
+					}
+				}
+			}
+		}
+	}
+	fmt.Println("No crossings detected.")
+}
+
 type OptimizedRenderOutput struct {
 	cuts  OptimizedPathCollection
 	mark1 OptimizedPathCollection
@@ -703,6 +764,7 @@ func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
 	filteredMark1.PrintPathLengths()
 
 	me.ScalePathsToGoldenRatio()
+	filteredMark1.CheckCrossings()
 
 	filteredMark1.Draw(s, MARK1_STYLE)
 	//me.mark2.Draw(s, MARK2_STYLE)
@@ -879,6 +941,25 @@ func CreateCenteredDecagon(radius float64) []geom.Coord {
 
 func DecagonArea(radius float64) float64 {
 	return 5.0 / 2.0 * radius * radius * math.Sin(math.Pi/5)
+}
+
+func orientation(p, q, r geom.Coord) int {
+	val := (q.Y-p.Y)*(r.X-q.X) - (q.X-p.X)*(r.Y-q.Y)
+	if val == 0 {
+		return 0 // colinear
+	}
+	if val > 0 {
+		return 1 // clock wise
+	}
+	return 2 // counterclock wise
+}
+
+func onSegment(p, q, r geom.Coord) bool {
+	if q.X <= math.Max(p.X, r.X) && q.X >= math.Min(p.X, r.X) &&
+		q.Y <= math.Max(p.Y, r.Y) && q.Y >= math.Min(p.Y, r.Y) {
+		return true
+	}
+	return false
 }
 
 ////////////////////////////////////////////////////////////////////////////
