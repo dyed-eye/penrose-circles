@@ -255,6 +255,37 @@ func (me *Path) TotalLength() float64 {
 	return total
 }
 
+func (me *Path) IsClosed() bool {
+	if me.segs == nil || me.segs.Len() == 0 {
+		return false
+	}
+
+	firstPoint := me.FrontPoint()
+	lastPoint := me.BackPoint()
+
+	return firstPoint != nil && lastPoint != nil && AlmostEqualsCoord(*firstPoint, *lastPoint)
+}
+
+func (me *Path) Area() float64 {
+	if !me.IsClosed() {
+		return 0
+	} 
+	var points []geom.Coord
+	points = append(points, *me.Front().P1())
+	for e := me.segs.Front(); e != nil; e = e.Next() {
+		points = append(points, *e.Value.(PathSegment).P2())
+	}
+
+	area := 0.0
+	n := len(points)
+	for i := 0; i < n; i++ {
+		j := (i+1) % n
+		area += points[i].X * points[j].Y
+		area -= points[j].X * points[i].Y
+	}
+	return math.Abs(area) / 2
+}
+
 // +++ CutLine
 type CutLine struct {
 	A, B geom.Coord
@@ -572,6 +603,16 @@ func (opc *OptimizedPathCollection) Filtered(maxLength float64) *OptimizedPathCo
 	return filtered
 }
 
+func (opc *OptimizedPathCollection) RemoveUnclosedPaths() {
+	var validPaths []*Path
+	for _, path := range opc.paths {
+		if path.IsClosed() {
+			validPaths = append(validPaths, path)
+		}
+	}
+	opc.paths = validPaths
+}
+
 type OptimizedRenderOutput struct {
 	cuts  OptimizedPathCollection
 	mark1 OptimizedPathCollection
@@ -584,6 +625,7 @@ func (me *OptimizedRenderOutput) Optimize() {
 
 	fmt.Fprintf(os.Stderr, "Optimizing mark1 paths\n")
 	me.mark1.Optimize()
+	me.mark1.RemoveUnclosedPaths()
 
 	fmt.Fprintf(os.Stderr, "Optimizing mark2 paths\n")
 	me.mark2.Optimize()
@@ -601,13 +643,80 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 	me.mark2.AddSegment(p)
 }
 
+func (me *OptimizedRenderOutput) ScalePathsToGoldenRatio() {
+	currentCoverage := 0.426877 / 1.469463
+	targetCoverage := 2 / (1 + math.Sqrt(5))
+
+	scaleFactor := math.Sqrt(targetCoverage / currentCoverage)
+
+	fmt.Printf("Scaling all paths by factor: %.6f\n", scaleFactor)
+
+	for _, path := range me.mark1.paths {
+		// Calculate path centroid
+		var sumX, sumY float64
+		pointCount := 0
+		points := make(map[geom.Coord]bool)
+
+		// Get all unique points in the path
+		points[*path.Front().P1()] = true
+		for e := path.segs.Front(); e != nil; e = e.Next() {
+			points[*e.Value.(PathSegment).P2()] = true
+		}
+
+		// Calculate centroid
+		for point := range points {
+			sumX += point.X
+			sumY += point.Y
+			pointCount++
+		}
+		center := geom.Coord{X: sumX/float64(pointCount), Y: sumY/float64(pointCount)}
+
+		// Scale each segment relative to the path's center
+		for e := path.segs.Front(); e != nil; e = e.Next() {
+			switch seg := e.Value.(type) {
+			case *CutLine:
+				seg.A = center.Plus(seg.A.Minus(center).Times(scaleFactor))
+				seg.B = center.Plus(seg.B.Minus(center).Times(scaleFactor))
+			case *MarkArc:
+				seg.A = center.Plus(seg.A.Minus(center).Times(scaleFactor))
+				seg.B = center.Plus(seg.B.Minus(center).Times(scaleFactor))
+				seg.C = center.Plus(seg.C.Minus(center).Times(scaleFactor))
+				seg.R *= scaleFactor
+			}
+		}
+	}
+}
+
 func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
+	radius := 1.0 // I expect it to match due to original tiling definition
+	decagonPoints := CreateCenteredDecagon(radius)
+	s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
+	for i := 1; i < 10; i++ {
+		s.PathLineTo(decagonPoints[i])
+	}
+	s.PathLineTo(decagonPoints[0])
+	s.EndPath()
+
 	fmt.Println("\nMark1 paths:")
-	me.mark1.PrintPathLengths()
+	// me.mark1.PrintPathLengths()
 	filteredMark1 := me.mark1.Filtered(0.09)
+	filteredMark1.PrintPathLengths()
+
+	me.ScalePathsToGoldenRatio()
+
 	filteredMark1.Draw(s, MARK1_STYLE)
 	//me.mark2.Draw(s, MARK2_STYLE)
 	//me.cuts.Draw(s, CUT_STYLE)
+
+	decagonArea := DecagonArea(radius)
+	totalPathArea := 0.0
+	for _, path := range filteredMark1.paths {
+		totalPathArea += path.Area()
+	}
+	fmt.Printf("Decagon area: %.6f\n", decagonArea)
+	fmt.Printf("Total closed paths area: %.6f\n", totalPathArea)
+	fmt.Printf("Coverage percentage: %.4f%%\n", (totalPathArea/decagonArea)*100)
+	fmt.Printf("Golden ratio percentage: %.4f%%\n", 2 / (1 + math.Sqrt(5)) * 100)
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -753,6 +862,23 @@ func BoundsOfPrimitiveSlice(ps []PenrosePrimitive) geom.Rect {
 		bounds.ExpandToContainRect(p.(geom.Bounded).Bounds())
 	}
 	return bounds
+}
+
+func CreateCenteredDecagon(radius float64) []geom.Coord {
+	points := make([]geom.Coord, 10)
+	decagonAngle := math.Pi / 5
+	for i := 0; i < 10; i++ {
+		angle := float64(i) * decagonAngle // - math.Pi / 2
+		points[i] = geom.Coord{
+			X: radius * math.Cos(angle),
+			Y: radius * math.Sin(angle),
+		}
+	}
+	return points
+}
+
+func DecagonArea(radius float64) float64 {
+	return 5.0 / 2.0 * radius * radius * math.Sin(math.Pi/5)
 }
 
 ////////////////////////////////////////////////////////////////////////////
