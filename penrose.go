@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sort"
 )
 
 // Arc drawing functions/strategies
@@ -704,81 +705,148 @@ func (me *OptimizedRenderOutput) AddMark2(p PathSegment) {
 	me.mark2.AddSegment(p)
 }
 
-func (me *OptimizedRenderOutput) ScalePathsToGoldenRatio() {
-	currentCoverage := 0.426877 / 1.469463
-	targetCoverage := 2 / (1 + math.Sqrt(5))
+func (opc *OptimizedPathCollection) ScaleToGoldenRatio(mode ScaleMode) float64 {
+	lightArea := 0.0
+	for _, path := range opc.paths {
+		lightArea += path.Area()
+	}
+	totalArea := DecagonArea(1.0)
+	darkArea := totalArea - lightArea
+	targetRatio := 1.0 / math.Phi
 
-	scaleFactor := math.Sqrt(targetCoverage / currentCoverage)
+	currentRatio := 0.0
+	switch mode {
+	case LightToDark:
+		currentRatio = lightArea / darkArea
+	case DarkToLight:
+		currentRatio = darkArea / lightArea
+	case LightToTotal:
+		currentRatio = lightArea / totalArea
+	case DarkToTotal:
+		currentRatio = darkArea / totalArea
+	}
+	scaleFactor := math.Sqrt(targetRatio / currentRatio)
 
-	fmt.Printf("Scaling all paths by factor: %.6f\n", scaleFactor)
-
-	for _, path := range me.mark1.paths {
-		// Calculate path centroid
-		var sumX, sumY float64
-		pointCount := 0
-		points := make(map[geom.Coord]bool)
-
-		// Get all unique points in the path
-		points[*path.Front().P1()] = true
-		for e := path.segs.Front(); e != nil; e = e.Next() {
-			points[*e.Value.(PathSegment).P2()] = true
-		}
-
-		// Calculate centroid
-		for point := range points {
-			sumX += point.X
-			sumY += point.Y
-			pointCount++
-		}
-		center := geom.Coord{X: sumX/float64(pointCount), Y: sumY/float64(pointCount)}
-
-		// Scale each segment relative to the path's center
+	for _, path := range opc.paths {
 		for e := path.segs.Front(); e != nil; e = e.Next() {
 			switch seg := e.Value.(type) {
 			case *CutLine:
-				seg.A = center.Plus(seg.A.Minus(center).Times(scaleFactor))
-				seg.B = center.Plus(seg.B.Minus(center).Times(scaleFactor))
+				seg.A = seg.A.Times(scaleFactor)
+				seg.B = seg.B.Times(scaleFactor)
 			case *MarkArc:
-				seg.A = center.Plus(seg.A.Minus(center).Times(scaleFactor))
-				seg.B = center.Plus(seg.B.Minus(center).Times(scaleFactor))
-				seg.C = center.Plus(seg.C.Minus(center).Times(scaleFactor))
+				seg.A = seg.A.Times(scaleFactor)
+				seg.B = seg.B.Times(scaleFactor)
+				seg.C = seg.C.Times(scaleFactor)
 				seg.R *= scaleFactor
 			}
 		}
 	}
+
+	return scaleFactor
 }
 
-func (me *OptimizedRenderOutput) MakeSVG(s *SVG) {
-	radius := 1.0 // I expect it to match due to original tiling definition
+func GenerateClassImages(filteredMark1 *OptimizedPathCollection) {
+	radius := 1.0
 	decagonPoints := CreateCenteredDecagon(radius)
-	s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
-	for i := 1; i < 10; i++ {
-		s.PathLineTo(decagonPoints[i])
-	}
-	s.PathLineTo(decagonPoints[0])
-	s.EndPath()
-
-	fmt.Println("\nMark1 paths:")
-	// me.mark1.PrintPathLengths()
-	filteredMark1 := me.mark1.Filtered(0.09)
-	filteredMark1.PrintPathLengths()
-
-	me.ScalePathsToGoldenRatio()
-	filteredMark1.CheckCrossings()
-
-	filteredMark1.Draw(s, MARK1_STYLE)
-	//me.mark2.Draw(s, MARK2_STYLE)
-	//me.cuts.Draw(s, CUT_STYLE)
-
-	decagonArea := DecagonArea(radius)
-	totalPathArea := 0.0
+	
+	// Group paths by rounded lengths
+	lengthMap := make(map[float64][]*Path)
+	var lengths []float64
 	for _, path := range filteredMark1.paths {
-		totalPathArea += path.Area()
+		l := math.Round(path.TotalLength()*1e6)/1e6
+		if _, exists := lengthMap[l]; !exists {
+			lengths = append(lengths, l)
+		}
+		lengthMap[l] = append(lengthMap[l], path)
 	}
-	fmt.Printf("Decagon area: %.6f\n", decagonArea)
-	fmt.Printf("Total closed paths area: %.6f\n", totalPathArea)
-	fmt.Printf("Coverage percentage: %.4f%%\n", (totalPathArea/decagonArea)*100)
-	fmt.Printf("Golden ratio percentage: %.4f%%\n", 2 / (1 + math.Sqrt(5)) * 100)
+	sort.Float64s(lengths)
+
+	// Generate image for each class
+	for i, l := range lengths {
+		// Create class-specific path collection
+		classPaths := &OptimizedPathCollection{}
+		for _, path := range lengthMap[l] {
+			classPaths.paths = append(classPaths.paths, path)
+		}
+		
+		// Scale according to LightToDark ratio (1/phi)
+		scaleFactor := classPaths.ScaleToGoldenRatio(LightToDark)
+		fmt.Printf("Class %d scaled by factor: %.6f\n", i+1, scaleFactor)
+		
+		// Create output file
+		file, err := os.Create(fmt.Sprintf("output/class%d_penrose.svg", i+1))
+		if err != nil {
+			fmt.Printf("Error creating file: %v\n", err)
+			continue
+		}
+		defer file.Close()
+
+		s := NewSVG(file)
+		bounds := geom.Rect{geom.Coord{-1.5, -1.5}, geom.Coord{1.5, 1.5}}
+		s.Start(bounds, DEFAULT_STYLE)
+
+		// Draw decagon (unscaled)
+		s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
+		for j := 1; j < 10; j++ {
+			s.PathLineTo(decagonPoints[j])
+		}
+		s.PathLineTo(decagonPoints[0])
+		s.EndPath()
+
+		// Draw scaled paths
+		color := fmt.Sprintf("hsl(120, 100%%, %d%%)", 20 + i*70)
+		for _, path := range classPaths.paths {
+			path.Draw(s, fmt.Sprintf("stroke: %s; stroke-width:0.002", color))
+		}
+
+		s.End()
+		fmt.Printf("Generated image for Class %d (length %.6f) with %d paths\n", 
+			i+1, l, len(lengthMap[l]))
+	}
+}
+
+func (me *OptimizedRenderOutput) MakeSVG(s *SVG, mode ScaleMode) {
+    radius := 1.0
+    decagonPoints := CreateCenteredDecagon(radius)
+    
+    // Group paths by rounded lengths
+    lengthMap := make(map[float64][]*Path)
+    var lengths []float64
+    for _, path := range me.mark1.paths {
+        l := math.Round(path.TotalLength()*1e6)/1e6
+        if _, exists := lengthMap[l]; !exists {
+            lengths = append(lengths, l)
+        }
+        lengthMap[l] = append(lengthMap[l], path)
+    }
+    sort.Float64s(lengths)
+
+    // Create separate collections for each class
+    for i, l := range lengths {
+        classPaths := &OptimizedPathCollection{}
+        for _, path := range lengthMap[l] {
+            classPaths.paths = append(classPaths.paths, path)
+        }
+        
+        // Apply scaling for this mode
+        scaleFactor := classPaths.ScaleToGoldenRatio(mode)
+        fmt.Printf("Class %d (%.6f) scaled with mode %s: factor %.6f\n", 
+            i+1, l, mode, scaleFactor)
+        
+        // Draw decagon
+        s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
+        for j := 1; j < 10; j++ {
+            s.PathLineTo(decagonPoints[j])
+        }
+        s.PathLineTo(decagonPoints[0])
+        s.EndPath()
+
+        // Draw scaled paths
+        color := fmt.Sprintf("hsl(%d, 100%%, 50%%)", i*180) // Alternate colors
+        for _, path := range classPaths.paths {
+            path.Draw(s, fmt.Sprintf("stroke: %s; stroke-width:0.002", color))
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////
@@ -859,6 +927,15 @@ var HalfDart = halfDart{
 		geom.Coord{0, 0},
 	},
 }
+
+type ScaleMode string
+
+const (
+	LightToDark	ScaleMode = "ltd"	// light/dark = 1/phi
+	DarkToLight	ScaleMode = "dtl"	// dark/light = 1/phi
+	LightToTotal	ScaleMode = "ltt"	// light/(light+dark)
+	DarkToTotal	ScaleMode = "dtt"	// dark/(light+dark) = 1/phi
+)
 
 func Sun() []PenrosePrimitive {
 	r := make([]PenrosePrimitive, 0, 50) // was 10
@@ -963,19 +1040,85 @@ func onSegment(p, q, r geom.Coord) bool {
 }
 
 ////////////////////////////////////////////////////////////////////////////
+func (me *OptimizedRenderOutput) GenerateAllModeImages() {
+	// First filter paths by length
+	filteredMark1 := me.mark1.Filtered(0.09)
+	
+	// Group filtered paths by their rounded lengths
+	lengthMap := make(map[float64][]*Path)
+	var lengths []float64
+	for _, path := range filteredMark1.paths {
+		l := math.Round(path.TotalLength()*1e6)/1e6
+		if _, exists := lengthMap[l]; !exists {
+			lengths = append(lengths, l)
+		}
+		lengthMap[l] = append(lengthMap[l], path)
+	}
+	sort.Float64s(lengths)
+
+	// Verify we have exactly two groups
+	if len(lengths) != 2 {
+		fmt.Printf("Expected 2 path groups, found %d\n", len(lengths))
+		return
+	}
+
+	modes := []ScaleMode{LightToDark, DarkToLight, LightToTotal, DarkToTotal}
+	radius := 1.0
+	bounds := geom.Rect{geom.Coord{-1.5, -1.5}, geom.Coord{1.5, 1.5}}
+
+	for _, mode := range modes {
+		filename := fmt.Sprintf("output/penrose_%s.svg", mode)
+		file, err := os.Create(filename)
+		if err != nil {
+			fmt.Printf("Error creating file %s: %v\n", filename, err)
+			continue
+		}
+		defer file.Close()
+
+		s := NewSVG(file)
+		s.Start(bounds, DEFAULT_STYLE)
+
+		// Draw reference decagon
+		decagonPoints := CreateCenteredDecagon(radius)
+		s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
+		for i := 1; i < 10; i++ {
+			s.PathLineTo(decagonPoints[i])
+		}
+		s.PathLineTo(decagonPoints[0])
+		s.EndPath()
+
+		// Process each path group
+		for i, l := range lengths {
+			classPaths := &OptimizedPathCollection{}
+			for _, path := range lengthMap[l] {
+				classPaths.paths = append(classPaths.paths, path)
+			}
+
+			scaleFactor := classPaths.ScaleToGoldenRatio(mode)
+			fmt.Printf("Mode %s - Group %d (length %.6f) scaled by %.6f (%d paths)\n",
+				mode, i+1, l, scaleFactor, len(lengthMap[l]))
+
+			// Draw with distinct colors
+			color := fmt.Sprintf("hsl(%d, 100%%, 50%%)", i*180) // Red and blue
+			for _, path := range classPaths.paths {
+				path.Draw(s, fmt.Sprintf("stroke: %s; stroke-width:0.002", color))
+			}
+		}
+
+		s.End()
+		fmt.Printf("Generated %s\n", filename)
+	}
+}
+
 func main() {
 	shapes := Sun()
-	// The laser cutter can cut 400x600.  Make our dimensions match that.
 	bounds := geom.Rect{geom.Coord{-300, -200}, geom.Coord{300, 200}}
 	bounds.Scale(1.0/150.0, 1.0/150.0)
 
-	// Deflate the shapes
+	// Deflate and process shapes
 	shapes = DeflatePenrosePrimitives(shapes, DEFLATE_LEVEL)
-
-	// Remove any shapes out of bounds
 	shapes = CullShapes(shapes, &bounds)
-
-	// Render to drawing primitives
+	
 	ro := &RenderOutput{}
 	for _, shape := range shapes {
 		shape.Render(ro)
@@ -983,22 +1126,12 @@ func main() {
 	ro.RemoveDuplicates()
 	oro := ro.Optimize()
 
-	// Create the output directory if it doesn't exist
+	// Create output directory
 	if err := os.MkdirAll("output", 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating output directory: %v\n", err)
 		return
 	}
 
-	// Open a file for writing
-	file, err := os.Create("output/penrose.svg")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating file: %v\n", err)
-		return
-	}
-	defer file.Close()  // Ensure the file is closed when done
-
-	s := NewSVG(file)
-	s.Start(bounds, DEFAULT_STYLE)
-	oro.MakeSVG(s)
-	s.End()
+	// Generate all images
+	oro.GenerateAllModeImages()
 }
