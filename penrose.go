@@ -1081,7 +1081,7 @@ func (me *OptimizedRenderOutput) GenerateScaledImages(outputDir string, mode Sca
 
         // Draw reference decagon
         decagonPoints := CreateCenteredDecagon(1.0)
-        s.StartPath(decagonPoints[0], "stroke:black;stroke-width:0.002;fill:none")
+        s.StartPath(decagonPoints[0], "stroke:red;stroke-width:0.005;fill:black")
         for i := 1; i < 10; i++ {
             s.PathLineTo(decagonPoints[i])
         }
@@ -1091,7 +1091,7 @@ func (me *OptimizedRenderOutput) GenerateScaledImages(outputDir string, mode Sca
         // Draw scaled paths
         color := fmt.Sprintf("hsl(%d, 100%%, 50%%)", groupIdx*180)
         for _, path := range groupPaths.paths {
-            path.Draw(s, fmt.Sprintf("stroke: %s; stroke-width:0.002", color))
+            path.Draw(s, fmt.Sprintf("stroke: %s; stroke-width:0.002; fill:black", color))
         }
         s.End()
 
